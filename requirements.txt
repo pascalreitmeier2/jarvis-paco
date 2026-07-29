@@ -4,3 +4,10 @@ elevenlabs>=1.50,<3
 websockets>=13
 python-dotenv>=1.0,<2
 spotipy>=2.23,<3
+
+# Dashboard (run_dashboard.py)
+flask>=3.0,<4
+anthropic>=0.69
+google-api-python-client>=2.100
+google-auth>=2.30
+google-auth-oauthlib>=1.2

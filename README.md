@@ -68,6 +68,47 @@ Edit the constants at the top of `jarvis.py`:
 | `MIN_RMS`     | Floor on how loud a block must be (helps in very quiet rooms).  |
 | `SAMPLE_RATE` | Try `48000` if your device does not like `44100`.                 |
 
+## Dashboard (Prio-Mails → To-dos)
+
+Neben dem Clap-Listener gibt es ein kleines **lokales Web-Dashboard** mit Widgets. Das erste Widget zeigt deine **aktuellen Gmail-Nachrichten nach Priorität sortiert** und leitet daraus konkrete **To-dos** ab (per Claude API, mit regelbasiertem Fallback). Die Architektur ist bewusst Widget-orientiert – weitere Kacheln (Kalender, Spotify, Aufgaben …) lassen sich in `dashboard/widgets/` ergänzen, ohne den Kern anzufassen.
+
+### Start
+
+```bash
+python -m pip install -r requirements.txt
+python run_dashboard.py
+```
+
+Der Server läuft standardmäßig auf `http://127.0.0.1:8765` und öffnet den Browser automatisch. Beenden mit **Strg+C**.
+
+### Einrichtung (`.env`)
+
+| Variable | Zweck |
+| -------- | ----- |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | OAuth-Client-Zugangsdaten aus der [Google Cloud Console](https://console.cloud.google.com/) (OAuth-Client vom Typ **Desktop**). Beim ersten Abruf öffnet sich einmalig das Google-Login; das Token wird unter `.cache/gmail_token.json` gespeichert (nur Lesezugriff, `gmail.readonly`). Alternativ `GOOGLE_CREDENTIALS_FILE` auf eine heruntergeladene Client-Secret-JSON zeigen lassen. |
+| `ANTHROPIC_API_KEY` | Aktiviert die KI-Priorisierung/To-do-Erstellung mit Claude. **Ohne Key** läuft das Dashboard weiter – dann greift eine transparente **Heuristik** (Stichwörter, ungelesen, Absender). |
+
+Optional:
+
+| Variable | Zweck |
+| -------- | ----- |
+| `DASHBOARD_MODEL` | Claude-Modell (Default `claude-opus-5`; z.B. `claude-sonnet-5` für weniger Kosten pro Refresh). |
+| `DASHBOARD_EFFORT` | Reasoning-Aufwand des Klassifizierungs-Calls (Default `low` = schnell/günstig). |
+| `GMAIL_QUERY` | Gmail-Suchsyntax für die zu priorisierenden Mails (Default `in:inbox is:unread newer_than:14d`). |
+| `GMAIL_MAX_RESULTS` | Maximale Anzahl Mails pro Aktualisierung (Default `20`). |
+| `DASHBOARD_HOST` / `DASHBOARD_PORT` | Adresse/Port des Servers (Default `127.0.0.1:8765`). |
+| `DASHBOARD_OPEN_BROWSER` | Browser beim Start automatisch öffnen (Default `True`). |
+
+### Bedienung
+
+- Die Mail-Kachel zeigt links die **priorisierten Mails** (Farbbalken Hoch/Mittel/Niedrig, Score, ein Satz Begründung, Klick öffnet den Thread in Gmail) und rechts die **abgeleiteten To-dos**.
+- To-dos lassen sich **abhaken**; der Status bleibt über Refreshes/Neustarts erhalten (`.cache/dashboard_todos.json`).
+- Aktualisieren via Button oben rechts, pro Widget, oder automatisch alle 5 Minuten.
+
+### Eigenes Widget hinzufügen
+
+Ein neues Modul in `dashboard/widgets/` anlegen, `Widget` ableiten, mit `@register_widget` dekorieren und `get_data()` implementieren – das Widget erscheint dann automatisch im Grid (bei Bedarf einen Renderer in `dashboard/static/dashboard.js` ergänzen).
+
 ## Troubleshooting
 
 - **Wrong or quiet mic:** On startup the script probes your default Windows input. If it is silent, it **auto-selects** the loudest working mic. To force a specific device, set `JARVIS_INPUT_DEVICE` in `.env` (index or name substring from `sounddevice.query_devices()`).
