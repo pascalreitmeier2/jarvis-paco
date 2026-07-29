@@ -74,7 +74,7 @@ Neben dem Clap-Listener gibt es ein kleines **lokales Web-Dashboard** mit Widget
 
 ### Start
 
-**Automatisch beim Doppel-Klatschen:** Läuft `jarvis.py`, wird beim Doppel-Klatschen der Dashboard-Server bei Bedarf im Hintergrund gestartet und in Chrome geöffnet (neben Spotify, Claude, Gmail …). Steuerung über `OPEN_DASHBOARD_ON_DOUBLE_CLAP` / `DASHBOARD_CHROME_MONITOR` in `jarvis.py`.
+**Automatisch beim Doppel-Klatschen:** Läuft `jarvis.py`, wird beim Doppel-Klatschen der Dashboard-Server bei Bedarf im Hintergrund gestartet und in Chrome geöffnet (neben Spotify, Claude, Gmail …). Steuerung über `OPEN_DASHBOARD_ON_DOUBLE_CLAP` in `jarvis.py`. Das Fenster geht standardmäßig dort auf, wo Chrome es platziert (`DASHBOARD_CHROME_MONITOR = None`); auf `1`/`2`/`3` setzen, um es auf einen festen Bildschirm zu pinnen.
 
 **Manuell:**
 

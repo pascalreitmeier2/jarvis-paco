@@ -32,7 +32,7 @@ Tuning (constants below):
   OPEN_BINANCE_BTC_IN_CHROME — Binance BTC trade page in Chrome (BINANCE_BTC_URL).
   OPEN_DASHBOARD_ON_DOUBLE_CLAP — start the local dashboard server (run_dashboard.py) if
     needed and open it in Chrome. URL from DASHBOARD_URL or dashboard/config.py (default
-    http://127.0.0.1:8765/). Monitor: DASHBOARD_CHROME_MONITOR.
+    http://127.0.0.1:8765/). Monitor: DASHBOARD_CHROME_MONITOR (None = no specific monitor).
   CLAUDE_CHROME_MONITOR / GMAIL_CHROME_MONITOR / BINANCE_CHROME_MONITOR — 1-based display index (Windows: sorted left-to-top).
   CHROME_SEPARATE_SITE_PROFILES — Windows: if True, uses temp --user-data-dir per site (not your normal profile).
     Default False so Claude/Gmail/Binance use your usual Chrome profile and logins; enable only if both windows keep
@@ -122,7 +122,9 @@ BINANCE_CHROME_MONITOR = 3
 # Local dashboard (run_dashboard.py): on a double clap, make sure the dashboard
 # server is running (start it in the background if needed) and open it in Chrome.
 OPEN_DASHBOARD_ON_DOUBLE_CLAP = True
-DASHBOARD_CHROME_MONITOR = 1
+# Which physical screen to place the dashboard on (Windows only). Set to None to
+# let Chrome open it wherever it likes (no specific monitor); set to 1/2/3 to pin.
+DASHBOARD_CHROME_MONITOR: int | None = None
 # Seconds to wait for the dashboard server to come up before opening the browser.
 DASHBOARD_START_TIMEOUT_S = 12.0
 
@@ -1189,12 +1191,19 @@ def open_dashboard_in_chrome() -> None:
     fs = OPEN_CHROME_FULLSCREEN
     post_mon: int | None = None
     user_data: str | None = None
-    if sys.platform == "win32":
+    if sys.platform == "win32" and DASHBOARD_CHROME_MONITOR is not None:
         post_mon = DASHBOARD_CHROME_MONITOR
         pos = _chrome_monitor_top_left(DASHBOARD_CHROME_MONITOR)
         if fs:
             size = _chrome_monitor_pixel_size(DASHBOARD_CHROME_MONITOR)
         else:
+            size = _chrome_window_size()
+        if CHROME_SEPARATE_SITE_PROFILES:
+            user_data = _chrome_site_user_data_dir("dashboard")
+    elif sys.platform == "win32":
+        # No specific monitor: still respect separate profiles / windowed size,
+        # but let Chrome choose where the window appears.
+        if not fs:
             size = _chrome_window_size()
         if CHROME_SEPARATE_SITE_PROFILES:
             user_data = _chrome_site_user_data_dir("dashboard")
