@@ -18,8 +18,12 @@ Tuning (constants below):
   NOISE_FLOOR_ALPHA — closer to 1 = slower baseline adaptation to room noise.
   MIN_RMS       — ignore spikes below this absolute level (float audio ~ [-1, 1]).
   SONG_URI      — Spotify or YouTube URL/URI to open on each double clap (empty = log only).
-  SPOTIFY_PLAY_IN_BACKGROUND — Windows: play the Spotify track via the `spotify:` app URI, then
-    minimize its window and restore focus so music plays in the background (no browser tab, no pop-up).
+  SPOTIFY_PLAY_IN_BACKGROUND — play the configured Spotify track in the background. Preferred path:
+    the Spotify Web API starts playback on the already-open desktop app without launching or focusing
+    any window (no pop-up). Set SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET (and optionally
+    SPOTIFY_REDIRECT_URI) to enable it; a one-time browser consent is cached under `.cache/`. If those
+    are missing, it falls back (Windows only) to the `spotify:` app URI, minimizing the window and
+    restoring focus afterwards (this can briefly flash the Spotify window).
   FOCUS_EXISTING_CURSOR_ON_DOUBLE_CLAP — if True, launch Cursor without -n (reuse / focus existing instance).
   OPEN_NEW_CURSOR_ON_DOUBLE_CLAP — if True, also launch Cursor with -n (extra new window; runs after focus launch if both).
   CURSOR_OPEN_FULLSCREEN — Windows: after focus/launch, send F11 to enter Cursor/VS Code-style fullscreen (toggle off with F11).
@@ -510,15 +514,139 @@ def _play_spotify_in_background_win32(app_uri: str) -> None:
         _restore_foreground_win32(prev_fg)
 
 
+def _spotify_web_api_creds() -> tuple[str, str, str] | None:
+    """Return (client_id, client_secret, redirect_uri) from env, or None."""
+    cid = (os.environ.get("SPOTIFY_CLIENT_ID") or "").strip()
+    secret = (os.environ.get("SPOTIFY_CLIENT_SECRET") or "").strip()
+    if not cid or not secret:
+        return None
+    redirect = (
+        os.environ.get("SPOTIFY_REDIRECT_URI") or "http://127.0.0.1:8888/callback"
+    ).strip()
+    return cid, secret, redirect
+
+
+def _spotify_start_playback_kwargs(app_uri: str) -> dict | None:
+    """Map a `spotify:` URI to start_playback kwargs (uris vs context_uri).
+
+    Tracks and episodes are played via `uris`; albums, playlists, artists and
+    shows are contexts and use `context_uri`.
+    """
+    m = re.match(
+        r"spotify:(track|album|playlist|artist|episode|show):([A-Za-z0-9]+)", app_uri
+    )
+    if not m:
+        return None
+    if m.group(1) in ("track", "episode"):
+        return {"uris": [app_uri]}
+    return {"context_uri": app_uri}
+
+
+# Cached authenticated Spotify Web API client (built lazily on first playback).
+_spotify_web_api_client = None
+
+
+def _get_spotify_web_api_client():
+    """Build (and cache) a spotipy client, or return None to fall back.
+
+    Requires SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET and the `spotipy`
+    package. The OAuth token is cached under `.cache/` so the browser consent
+    prompt appears only on the first run.
+    """
+    global _spotify_web_api_client
+    if _spotify_web_api_client is not None:
+        return _spotify_web_api_client
+    creds = _spotify_web_api_creds()
+    if creds is None:
+        return None
+    try:
+        import spotipy
+        from spotipy.oauth2 import SpotifyOAuth
+    except ImportError:
+        log.warning(
+            "spotipy not installed; run `pip install -r requirements.txt` for "
+            "true background Spotify playback. Falling back to window minimize."
+        )
+        return None
+    cid, secret, redirect = creds
+    cache_dir = Path(__file__).resolve().parent / ".cache"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    auth = SpotifyOAuth(
+        client_id=cid,
+        client_secret=secret,
+        redirect_uri=redirect,
+        scope="user-modify-playback-state user-read-playback-state",
+        cache_path=str(cache_dir / "spotify_token.json"),
+        open_browser=True,
+    )
+    try:
+        _spotify_web_api_client = spotipy.Spotify(auth_manager=auth)
+    except Exception as e:
+        log.warning("Could not init Spotify Web API client: %s", e)
+        return None
+    return _spotify_web_api_client
+
+
+def _play_spotify_via_web_api(app_uri: str) -> bool:
+    """Start playback on the already-running Spotify via the Web API.
+
+    No window is launched, so nothing pops up: the desktop app that is already
+    open just starts playing. Returns True if playback started, or False to let
+    the caller fall back (missing credentials, spotipy, or no online device).
+    """
+    kwargs = _spotify_start_playback_kwargs(app_uri)
+    if kwargs is None:
+        return False
+    sp = _get_spotify_web_api_client()
+    if sp is None:
+        return False
+    try:
+        devices = (sp.devices() or {}).get("devices", [])
+    except Exception as e:
+        log.warning("Could not list Spotify devices: %s", e)
+        return False
+    if not devices:
+        log.warning(
+            "No online Spotify device found; keep the Spotify app open so it "
+            "can play in the background. Falling back."
+        )
+        return False
+    device = next((d for d in devices if d.get("is_active")), devices[0])
+    device_id = device.get("id")
+    try:
+        sp.start_playback(device_id=device_id, **kwargs)
+    except Exception as e:
+        log.warning("Could not start Spotify Web API playback: %s", e)
+        return False
+    log.info(
+        "Started Spotify playback in the background on device: %s",
+        device.get("name") or device_id,
+    )
+    return True
+
+
 def play_song(uri: str) -> None:
     u = uri.strip()
     if not u:
         return
-    if sys.platform == "win32" and SPOTIFY_PLAY_IN_BACKGROUND:
+    if SPOTIFY_PLAY_IN_BACKGROUND:
         app_uri = _spotify_app_uri(u)
         if app_uri is not None:
-            _play_spotify_in_background_win32(app_uri)
-            return
+            # Preferred: control the already-open Spotify via the Web API. No
+            # window is launched or focused, so the app stays put and nothing
+            # pops up — song selection and playback happen entirely in the
+            # background.
+            if _play_spotify_via_web_api(app_uri):
+                return
+            # Fallback (Windows only): launch the desktop `spotify:` URI, then
+            # minimize its window and restore focus. This can briefly flash the
+            # Spotify window; configure the Web API above to avoid that.
+            if sys.platform == "win32":
+                _play_spotify_in_background_win32(app_uri)
+                return
     try:
         if sys.platform == "win32":
             os.startfile(u)
