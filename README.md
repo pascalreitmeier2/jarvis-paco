@@ -1,6 +1,6 @@
 # Desktop clap → Jarvis-style welcome
 
-Python script that listens to your default microphone and runs a **double-clap** welcome flow (Spotify, Chrome windows — Claude and Gmail — ElevenLabs voice, Cursor). By default every launched window opens **maximized** (`OPEN_WINDOWS_MAXIMIZED = True`; fills the work area, title bar kept — set it to `False` for the old windowed sizes). See constants at the top of `jarvis.py` for behavior and tuning.
+Python script that listens to your default microphone and runs a **double-clap** welcome flow (Spotify, Chrome windows — Claude, Gmail and the local **Dashboard** — ElevenLabs voice, Cursor). By default every launched window opens **maximized** (`OPEN_WINDOWS_MAXIMIZED = True`; fills the work area, title bar kept — set it to `False` for the old windowed sizes). See constants at the top of `jarvis.py` for behavior and tuning.
 
 ## Setup
 
@@ -73,6 +73,10 @@ Edit the constants at the top of `jarvis.py`:
 Neben dem Clap-Listener gibt es ein kleines **lokales Web-Dashboard** mit Widgets. Das erste Widget zeigt deine **aktuellen Gmail-Nachrichten nach Priorität sortiert** und leitet daraus konkrete **To-dos** ab (per Claude API, mit regelbasiertem Fallback). Die Architektur ist bewusst Widget-orientiert – weitere Kacheln (Kalender, Spotify, Aufgaben …) lassen sich in `dashboard/widgets/` ergänzen, ohne den Kern anzufassen.
 
 ### Start
+
+**Automatisch beim Doppel-Klatschen:** Läuft `jarvis.py`, wird beim Doppel-Klatschen der Dashboard-Server bei Bedarf im Hintergrund gestartet und in Chrome geöffnet (neben Spotify, Claude, Gmail …). Steuerung über `OPEN_DASHBOARD_ON_DOUBLE_CLAP` / `DASHBOARD_CHROME_MONITOR` in `jarvis.py`.
+
+**Manuell:**
 
 ```bash
 python -m pip install -r requirements.txt

@@ -30,6 +30,9 @@ Tuning (constants below):
   OPEN_CLAUDE_CODE_IN_CHROME — Claude in Chrome after Spotify (CLAUDE_CODE_URL).
   OPEN_GMAIL_IN_CHROME — Gmail inbox in Chrome after Spotify (GMAIL_URL, default the Gmail inbox).
   OPEN_BINANCE_BTC_IN_CHROME — Binance BTC trade page in Chrome (BINANCE_BTC_URL).
+  OPEN_DASHBOARD_ON_DOUBLE_CLAP — start the local dashboard server (run_dashboard.py) if
+    needed and open it in Chrome. URL from DASHBOARD_URL or dashboard/config.py (default
+    http://127.0.0.1:8765/). Monitor: DASHBOARD_CHROME_MONITOR.
   CLAUDE_CHROME_MONITOR / GMAIL_CHROME_MONITOR / BINANCE_CHROME_MONITOR — 1-based display index (Windows: sorted left-to-top).
   CHROME_SEPARATE_SITE_PROFILES — Windows: if True, uses temp --user-data-dir per site (not your normal profile).
     Default False so Claude/Gmail/Binance use your usual Chrome profile and logins; enable only if both windows keep
@@ -115,6 +118,13 @@ CHROME_SEPARATE_SITE_PROFILES = False
 CLAUDE_CHROME_MONITOR = 1
 GMAIL_CHROME_MONITOR = 2
 BINANCE_CHROME_MONITOR = 3
+
+# Local dashboard (run_dashboard.py): on a double clap, make sure the dashboard
+# server is running (start it in the background if needed) and open it in Chrome.
+OPEN_DASHBOARD_ON_DOUBLE_CLAP = True
+DASHBOARD_CHROME_MONITOR = 1
+# Seconds to wait for the dashboard server to come up before opening the browser.
+DASHBOARD_START_TIMEOUT_S = 12.0
 
 JARVIS_WELCOME_ENABLED = True
 JARVIS_WELCOME_PHRASE = (
@@ -1087,6 +1097,124 @@ def open_binance_btc_in_chrome() -> None:
     )
 
 
+def _dashboard_host_port() -> tuple[str, int]:
+    """Host/port of the local dashboard, kept in sync with dashboard/config.py."""
+    try:
+        from dashboard import config as dash_config
+
+        return dash_config.HOST, dash_config.PORT
+    except Exception:
+        # Fall back to the documented defaults if the package can't be imported.
+        host = (os.environ.get("DASHBOARD_HOST") or "127.0.0.1").strip()
+        try:
+            port = int(os.environ.get("DASHBOARD_PORT", "8765"))
+        except ValueError:
+            port = 8765
+        return host, port
+
+
+def _dashboard_url() -> str:
+    override = (os.environ.get("DASHBOARD_URL") or "").strip()
+    if override:
+        return override
+    host, port = _dashboard_host_port()
+    return f"http://{host}:{port}/"
+
+
+def _port_is_open(host: str, port: int, timeout: float = 0.5) -> bool:
+    import socket
+
+    connect_host = "127.0.0.1" if host in ("", "0.0.0.0") else host
+    try:
+        with socket.create_connection((connect_host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _ensure_dashboard_running() -> bool:
+    """Start the dashboard server (once) if it isn't already listening.
+
+    Returns True when the server is reachable. The server runs as a separate,
+    detached process so it keeps running independently of this listener.
+    """
+    host, port = _dashboard_host_port()
+    if _port_is_open(host, port):
+        return True
+
+    project_dir = Path(__file__).resolve().parent
+    entry = project_dir / "run_dashboard.py"
+    if not entry.is_file():
+        log.warning("Dashboard entry point not found: %s", entry)
+        return False
+
+    env = os.environ.copy()
+    # The listener opens the browser on the chosen monitor, so tell the
+    # dashboard process not to open its own tab.
+    env["DASHBOARD_OPEN_BROWSER"] = "False"
+
+    popen_kw: dict = {
+        "cwd": str(project_dir),
+        "env": env,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        popen_kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        log.info("Starting dashboard server: %s", entry)
+        subprocess.Popen([sys.executable, str(entry)], **popen_kw)
+    except OSError as e:
+        log.warning("Could not start dashboard server: %s", e)
+        return False
+
+    deadline = time.monotonic() + max(1.0, DASHBOARD_START_TIMEOUT_S)
+    while time.monotonic() < deadline:
+        if _port_is_open(host, port):
+            return True
+        time.sleep(0.3)
+    log.warning("Dashboard server did not come up within %.0fs", DASHBOARD_START_TIMEOUT_S)
+    return False
+
+
+def open_dashboard_in_chrome() -> None:
+    if not OPEN_DASHBOARD_ON_DOUBLE_CLAP:
+        return
+    if not _ensure_dashboard_running():
+        return
+    url = _dashboard_url()
+    pos: tuple[int, int] | None = None
+    size: tuple[int, int] | None = None
+    fs = OPEN_CHROME_FULLSCREEN
+    post_mon: int | None = None
+    user_data: str | None = None
+    if sys.platform == "win32":
+        post_mon = DASHBOARD_CHROME_MONITOR
+        pos = _chrome_monitor_top_left(DASHBOARD_CHROME_MONITOR)
+        if fs:
+            size = _chrome_monitor_pixel_size(DASHBOARD_CHROME_MONITOR)
+        else:
+            size = _chrome_window_size()
+        if CHROME_SEPARATE_SITE_PROFILES:
+            user_data = _chrome_site_user_data_dir("dashboard")
+    elif not fs:
+        size = _chrome_window_size()
+    else:
+        size = None
+    _open_url_in_chrome(
+        url,
+        new_window=True,
+        label="Dashboard",
+        window_position=pos,
+        window_size=size,
+        fullscreen=fs,
+        maximized=OPEN_WINDOWS_MAXIMIZED,
+        win32_post_fullscreen_monitor=post_mon,
+        user_data_dir=user_data,
+    )
+
+
 def _cursor_executable() -> str | None:
     if sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA", "")
@@ -1210,6 +1338,7 @@ def run_double_clap_actions() -> None:
     open_claude_in_chrome()
     open_gmail_in_chrome()
     open_binance_btc_in_chrome()
+    open_dashboard_in_chrome()
     if JARVIS_WELCOME_ENABLED and JARVIS_WELCOME_PHRASE.strip():
         delay = max(0.0, JARVIS_AFTER_SONG_DELAY_S)
         if delay:
