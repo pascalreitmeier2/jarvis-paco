@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jarvis Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◆</span>
+      <div>
+        <h1>Jarvis Dashboard</h1>
+        <p class="subtitle">Deine Prio-Mails, in To-dos übersetzt</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span id="clock" class="clock"></span>
+      <button id="refresh-all" class="btn" title="Alles aktualisieren">↻ Aktualisieren</button>
+    </div>
+  </header>
+
+  <main id="grid" class="grid">
+    {% for w in widgets %}
+    <section class="widget span-{{ w.span }}" data-widget-id="{{ w.id }}"
+             data-render-type="{{ w.render_type }}" data-refresh="{{ w.refresh_seconds }}">
+      <div class="widget-head">
+        <h2><span class="widget-icon">{{ w.icon }}</span> {{ w.title }}</h2>
+        <div class="widget-head-right">
+          <span class="widget-meta"></span>
+          <button class="btn btn-ghost widget-refresh" title="Widget aktualisieren">↻</button>
+        </div>
+      </div>
+      <div class="widget-body">
+        <div class="loading">Lade …</div>
+      </div>
+    </section>
+    {% endfor %}
+  </main>
+
+  <footer class="footer">
+    <span>Widgets: {{ widgets|length }}</span>
+    <span class="dot">·</span>
+    <span>Weitere Widgets lassen sich in <code>dashboard/widgets/</code> ergänzen.</span>
+  </footer>
+
+  <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>
