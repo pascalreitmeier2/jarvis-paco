@@ -18,6 +18,8 @@ Tuning (constants below):
   NOISE_FLOOR_ALPHA — closer to 1 = slower baseline adaptation to room noise.
   MIN_RMS       — ignore spikes below this absolute level (float audio ~ [-1, 1]).
   SONG_URI      — Spotify or YouTube URL/URI to open on each double clap (empty = log only).
+  SPOTIFY_PLAY_IN_BACKGROUND — Windows: play the Spotify track via the `spotify:` app URI, then
+    minimize its window and restore focus so music plays in the background (no browser tab, no pop-up).
   FOCUS_EXISTING_CURSOR_ON_DOUBLE_CLAP — if True, launch Cursor without -n (reuse / focus existing instance).
   OPEN_NEW_CURSOR_ON_DOUBLE_CLAP — if True, also launch Cursor with -n (extra new window; runs after focus launch if both).
   CURSOR_OPEN_FULLSCREEN — Windows: after focus/launch, send F11 to enter Cursor/VS Code-style fullscreen (toggle off with F11).
@@ -42,6 +44,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -76,16 +79,22 @@ INPUT_SILENT_RMS = 0.001
 # Spotify: "spotify:track:TRACK_ID" or https://open.spotify.com/track/...
 # YouTube: https://www.youtube.com/watch?v=...
 SONG_URI = "https://open.spotify.com/track/39shmbIHICJ2Wxnk1fPSdz?si=2900c75c2e2d4b82"
+# Windows: start Spotify playback without bringing its window to the foreground.
+# The track is opened via the `spotify:` app URI (no browser tab), then the
+# Spotify window is minimized and focus is returned to the app you were using,
+# so the music plays in the background. Non-Spotify URIs (e.g. YouTube) and other
+# platforms fall back to the normal open behavior.
+SPOTIFY_PLAY_IN_BACKGROUND = True
 
 # Cursor: focus existing instance (no -n). Set OPEN_NEW_CURSOR_ON_DOUBLE_CLAP for a new window as well.
 FOCUS_EXISTING_CURSOR_ON_DOUBLE_CLAP = True
 OPEN_NEW_CURSOR_ON_DOUBLE_CLAP = False
-CURSOR_OPEN_FULLSCREEN = True
+CURSOR_OPEN_FULLSCREEN = False
 
 # Google Chrome (fallback: default browser). URLs overridable in .env.
 OPEN_CLAUDE_CODE_IN_CHROME = True
 OPEN_BINANCE_BTC_IN_CHROME = False
-OPEN_CHROME_FULLSCREEN = True
+OPEN_CHROME_FULLSCREEN = False
 # False = default Chrome profile (your normal user, extensions, cookies). True = temp dirs under %TEMP% per site.
 CHROME_SEPARATE_SITE_PROFILES = False
 # Which physical screen (1 = leftmost/top-first after sorting). Windows only; ignored elsewhere.
@@ -380,10 +389,136 @@ def say_jarvis_welcome() -> None:
         log.warning("Could not play ElevenLabs audio: %s", e)
 
 
+def _spotify_app_uri(uri: str) -> str | None:
+    """Convert an open.spotify.com URL to a `spotify:` app URI, else None.
+
+    A `spotify:` URI launches the desktop app and starts playback (no browser
+    tab). Already-`spotify:` URIs pass through; anything else (YouTube, etc.)
+    returns None so the caller can fall back to the normal open behavior.
+    """
+    u = uri.strip()
+    if u.startswith("spotify:"):
+        return u
+    m = re.match(
+        r"https?://open\.spotify\.com/(?:intl-[a-z]+/)?"
+        r"(track|album|playlist|artist|episode|show)/([A-Za-z0-9]+)",
+        u,
+    )
+    if m:
+        return f"spotify:{m.group(1)}:{m.group(2)}"
+    return None
+
+
+def _spotify_background_wait_timeout_s() -> float:
+    try:
+        return max(1.0, float((os.environ.get("SPOTIFY_BG_WAIT_S") or "8").strip()))
+    except ValueError:
+        return 8.0
+
+
+def _spotify_main_hwnds_win32() -> set[int]:
+    """HWND ints for visible-or-minimized top-level spotify.exe windows."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    GW_OWNER = 4
+    GWL_EXSTYLE = -20
+    WS_EX_TOOLWINDOW = 0x00000080
+    found: set[int] = set()
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _enum(hwnd: wintypes.HWND, _lp: wintypes.LPARAM) -> bool:
+        if user32.GetWindow(hwnd, GW_OWNER):
+            return True
+        if user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW:
+            return True
+        if not user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd):
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value == 0:
+            return True
+        hproc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+        if not hproc:
+            return True
+        try:
+            buf = ctypes.create_unicode_buffer(4096)
+            sz = wintypes.DWORD(len(buf))
+            if not kernel32.QueryFullProcessImageNameW(hproc, 0, buf, ctypes.byref(sz)):
+                return True
+            exe_path = buf.value
+        finally:
+            kernel32.CloseHandle(hproc)
+        if os.path.basename(exe_path).lower() != "spotify.exe":
+            return True
+        found.add(int(hwnd))
+        return True
+
+    user32.EnumWindows(_enum, 0)
+    return found
+
+
+def _restore_foreground_win32(hwnd: int) -> None:
+    """Return focus to hwnd, working around the foreground-lock with AttachThreadInput."""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    cur = user32.GetForegroundWindow()
+    tid_cur = user32.GetWindowThreadProcessId(cur, None) if cur else 0
+    tid_tgt = user32.GetWindowThreadProcessId(hwnd, None)
+    attached = bool(tid_cur and tid_tgt and tid_cur != tid_tgt)
+    if attached:
+        user32.AttachThreadInput(tid_cur, tid_tgt, True)
+    user32.SetForegroundWindow(hwnd)
+    if attached:
+        user32.AttachThreadInput(tid_cur, tid_tgt, False)
+
+
+def _play_spotify_in_background_win32(app_uri: str) -> None:
+    """Start playback via a `spotify:` URI, then keep Spotify in the background.
+
+    Remembers the active window, launches the track, waits briefly for the
+    Spotify window to appear, minimizes it, and restores focus to the window
+    that was active before — so the music plays without Spotify popping up.
+    """
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    SW_MINIMIZE = 6
+
+    prev_fg = user32.GetForegroundWindow()
+    try:
+        os.startfile(app_uri)
+    except OSError as e:
+        log.warning("Could not start Spotify playback: %s", e)
+        return
+
+    deadline = time.monotonic() + _spotify_background_wait_timeout_s()
+    windows: set[int] = set()
+    while time.monotonic() < deadline:
+        time.sleep(0.12)
+        windows = _spotify_main_hwnds_win32()
+        if windows:
+            break
+
+    for h in windows:
+        user32.ShowWindow(h, SW_MINIMIZE)
+    if prev_fg and int(prev_fg) not in windows:
+        _restore_foreground_win32(prev_fg)
+
+
 def play_song(uri: str) -> None:
     u = uri.strip()
     if not u:
         return
+    if sys.platform == "win32" and SPOTIFY_PLAY_IN_BACKGROUND:
+        app_uri = _spotify_app_uri(u)
+        if app_uri is not None:
+            _play_spotify_in_background_win32(app_uri)
+            return
     try:
         if sys.platform == "win32":
             os.startfile(u)
