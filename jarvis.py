@@ -84,7 +84,7 @@ CURSOR_OPEN_FULLSCREEN = True
 
 # Google Chrome (fallback: default browser). URLs overridable in .env.
 OPEN_CLAUDE_CODE_IN_CHROME = True
-OPEN_BINANCE_BTC_IN_CHROME = True
+OPEN_BINANCE_BTC_IN_CHROME = False
 OPEN_CHROME_FULLSCREEN = True
 # False = default Chrome profile (your normal user, extensions, cookies). True = temp dirs under %TEMP% per site.
 CHROME_SEPARATE_SITE_PROFILES = False
