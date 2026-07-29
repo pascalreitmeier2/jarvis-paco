@@ -28,12 +28,16 @@ Tuning (constants below):
   OPEN_NEW_CURSOR_ON_DOUBLE_CLAP — if True, also launch Cursor with -n (extra new window; runs after focus launch if both).
   CURSOR_OPEN_FULLSCREEN — Windows: after focus/launch, send F11 to enter Cursor/VS Code-style fullscreen (toggle off with F11).
   OPEN_CLAUDE_CODE_IN_CHROME — Claude in Chrome after Spotify (CLAUDE_CODE_URL).
+  OPEN_GMAIL_IN_CHROME — Gmail inbox in Chrome after Spotify (GMAIL_URL, default the Gmail inbox).
   OPEN_BINANCE_BTC_IN_CHROME — Binance BTC trade page in Chrome (BINANCE_BTC_URL).
-  CLAUDE_CHROME_MONITOR / BINANCE_CHROME_MONITOR — 1-based display index (Windows: sorted left-to-top).
+  CLAUDE_CHROME_MONITOR / GMAIL_CHROME_MONITOR / BINANCE_CHROME_MONITOR — 1-based display index (Windows: sorted left-to-top).
   CHROME_SEPARATE_SITE_PROFILES — Windows: if True, uses temp --user-data-dir per site (not your normal profile).
-    Default False so Claude/Binance use your usual Chrome profile and logins; enable only if both windows keep
+    Default False so Claude/Gmail/Binance use your usual Chrome profile and logins; enable only if both windows keep
     opening on the same monitor and you accept a separate profile for automation.
   OPEN_CHROME_FULLSCREEN — Fullscreen on the chosen monitor (Windows: new window is detected and snapped with SetWindowPos).
+  OPEN_WINDOWS_MAXIMIZED — Open each launched window maximized (fills the work area, title bar kept). Applies to the
+    Chrome windows (Claude, Gmail, Binance) and Cursor. Independent of the *_FULLSCREEN kiosk flags; fullscreen wins
+    over maximize when both are set for the same window.
   JARVIS_WELCOME_* — TTS after the song (ElevenLabs). Configure via environment or a `.env`
     file next to this script (ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, etc.).
     With JARVIS_WELCOME_CACHE_ENABLED, audio is saved under `.cache/jarvis_welcome/` (WAV) and
@@ -97,12 +101,19 @@ CURSOR_OPEN_FULLSCREEN = False
 
 # Google Chrome (fallback: default browser). URLs overridable in .env.
 OPEN_CLAUDE_CODE_IN_CHROME = True
+OPEN_GMAIL_IN_CHROME = True
 OPEN_BINANCE_BTC_IN_CHROME = False
 OPEN_CHROME_FULLSCREEN = False
+# Open every launched window maximized: it fills the monitor work area while the
+# title bar stays visible (unlike the *_FULLSCREEN kiosk flags). If a window is
+# also set to fullscreen, fullscreen wins for that window. Applies to Chrome
+# windows (Claude, Gmail, Binance) and the Cursor window.
+OPEN_WINDOWS_MAXIMIZED = True
 # False = default Chrome profile (your normal user, extensions, cookies). True = temp dirs under %TEMP% per site.
 CHROME_SEPARATE_SITE_PROFILES = False
 # Which physical screen (1 = leftmost/top-first after sorting). Windows only; ignored elsewhere.
 CLAUDE_CHROME_MONITOR = 1
+GMAIL_CHROME_MONITOR = 2
 BINANCE_CHROME_MONITOR = 3
 
 JARVIS_WELCOME_ENABLED = True
@@ -838,6 +849,7 @@ def _chrome_snap_window_to_monitor_win32(
     one_based_monitor: int,
     *,
     fullscreen: bool,
+    maximize: bool = False,
     windowed_size: tuple[int, int] | None,
 ) -> None:
     import ctypes
@@ -863,6 +875,11 @@ def _chrome_snap_window_to_monitor_win32(
         y = mt + max(0, (mb - mt - h) // 2)
     user32.SetWindowPos(hwnd, HWND_TOP, x, y, w, h, flags)
 
+    if not fullscreen and maximize:
+        # The window now sits on the target monitor; maximizing fills that
+        # monitor's work area while keeping the title bar (no F11 kiosk mode).
+        user32.ShowWindow(hwnd, SW_SHOWMAXIMIZED)
+
     if fullscreen:
         user32.ShowWindow(hwnd, SW_SHOWMAXIMIZED)
         KEYEVENTF_KEYUP = 0x0002
@@ -887,6 +904,7 @@ def _open_url_in_chrome(
     window_position: tuple[int, int] | None = None,
     window_size: tuple[int, int] | None = None,
     fullscreen: bool = False,
+    maximized: bool = False,
     win32_post_fullscreen_monitor: int | None = None,
     user_data_dir: str | None = None,
 ) -> None:
@@ -905,12 +923,23 @@ def _open_url_in_chrome(
             if window_position is not None:
                 x, y = window_position
                 args.append(f"--window-position={x},{y}")
-            if window_size:
+            # --start-maximized ignores an explicit --window-size, so only pass a
+            # size when the window is neither maximized nor fullscreen.
+            if window_size and not (maximized and not fullscreen):
                 args.append(f"--window-size={window_size[0]},{window_size[1]}")
             if fullscreen and not (
                 sys.platform == "win32" and win32_post_fullscreen_monitor is not None
             ):
                 args.append("--start-fullscreen")
+            elif (
+                maximized
+                and not fullscreen
+                and not (
+                    sys.platform == "win32"
+                    and win32_post_fullscreen_monitor is not None
+                )
+            ):
+                args.append("--start-maximized")
             args.append(u)
             popen_kw: dict = {
                 "args": args,
@@ -932,6 +961,7 @@ def _open_url_in_chrome(
                         hwnd,
                         mon,
                         fullscreen=fullscreen,
+                        maximize=maximized and not fullscreen,
                         windowed_size=window_size if not fullscreen else None,
                     )
                 else:
@@ -976,6 +1006,44 @@ def open_claude_in_chrome() -> None:
         window_position=pos,
         window_size=size,
         fullscreen=fs,
+        maximized=OPEN_WINDOWS_MAXIMIZED,
+        win32_post_fullscreen_monitor=post_mon,
+        user_data_dir=user_data,
+    )
+
+
+def open_gmail_in_chrome() -> None:
+    if not OPEN_GMAIL_IN_CHROME:
+        return
+    url = (
+        os.environ.get("GMAIL_URL") or "https://mail.google.com/mail/u/0/#inbox"
+    ).strip()
+    pos: tuple[int, int] | None = None
+    size: tuple[int, int] | None = None
+    fs = OPEN_CHROME_FULLSCREEN
+    post_mon: int | None = None
+    user_data: str | None = None
+    if sys.platform == "win32":
+        post_mon = GMAIL_CHROME_MONITOR
+        pos = _chrome_monitor_top_left(GMAIL_CHROME_MONITOR)
+        if fs:
+            size = _chrome_monitor_pixel_size(GMAIL_CHROME_MONITOR)
+        else:
+            size = _chrome_window_size()
+        if CHROME_SEPARATE_SITE_PROFILES:
+            user_data = _chrome_site_user_data_dir("gmail")
+    elif not fs:
+        size = _chrome_window_size()
+    else:
+        size = None
+    _open_url_in_chrome(
+        url,
+        new_window=True,
+        label="Gmail",
+        window_position=pos,
+        window_size=size,
+        fullscreen=fs,
+        maximized=OPEN_WINDOWS_MAXIMIZED,
         win32_post_fullscreen_monitor=post_mon,
         user_data_dir=user_data,
     )
@@ -1013,6 +1081,7 @@ def open_binance_btc_in_chrome() -> None:
         window_position=pos,
         window_size=size,
         fullscreen=fs,
+        maximized=OPEN_WINDOWS_MAXIMIZED,
         win32_post_fullscreen_monitor=post_mon,
         user_data_dir=user_data,
     )
@@ -1114,6 +1183,16 @@ def _cursor_send_f11_fullscreen_win32(hwnd: int) -> None:
     user32.keybd_event(VK_F11, 0, KEYEVENTF_KEYUP, 0)
 
 
+def _cursor_maximize_win32(hwnd: int) -> None:
+    """Maximize the Cursor window (fills the work area, title bar kept)."""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    SW_SHOWMAXIMIZED = 3
+    _cursor_foreground_hwnd_win32(hwnd)
+    user32.ShowWindow(hwnd, SW_SHOWMAXIMIZED)
+
+
 def _focus_existing_cursor_window_win32() -> bool:
     """Bring an existing Cursor.exe main window to the foreground (no new process)."""
     if sys.platform != "win32":
@@ -1129,6 +1208,7 @@ def run_double_clap_actions() -> None:
     """Run outside the mic loop so sleeps do not stall capture."""
     play_song(SONG_URI)
     open_claude_in_chrome()
+    open_gmail_in_chrome()
     open_binance_btc_in_chrome()
     if JARVIS_WELCOME_ENABLED and JARVIS_WELCOME_PHRASE.strip():
         delay = max(0.0, JARVIS_AFTER_SONG_DELAY_S)
@@ -1166,13 +1246,15 @@ def open_cursor_window() -> None:
     except OSError as e:
         log.warning("Could not start or focus Cursor: %s", e)
         return
-    if sys.platform == "win32" and CURSOR_OPEN_FULLSCREEN:
+    if sys.platform == "win32" and (CURSOR_OPEN_FULLSCREEN or OPEN_WINDOWS_MAXIMIZED):
         time.sleep(0.5)
         hwnd = _cursor_largest_main_hwnd_win32()
-        if hwnd is not None:
+        if hwnd is None:
+            log.warning("Cursor: no Cursor window found to resize.")
+        elif CURSOR_OPEN_FULLSCREEN:
             _cursor_send_f11_fullscreen_win32(hwnd)
         else:
-            log.warning("Cursor fullscreen: no Cursor window found to send F11.")
+            _cursor_maximize_win32(hwnd)
 
 
 def main() -> int:
@@ -1206,13 +1288,28 @@ def main() -> int:
         log.info("Double clap will also open a new Cursor window (-n).")
     if CURSOR_OPEN_FULLSCREEN and sys.platform == "win32":
         log.info("Cursor will be sent F11 for fullscreen after focus/launch.")
+    win_mode = (
+        " fullscreen"
+        if OPEN_CHROME_FULLSCREEN
+        else (" maximized" if OPEN_WINDOWS_MAXIMIZED else "")
+    )
     if OPEN_CLAUDE_CODE_IN_CHROME:
         cu = (os.environ.get("CLAUDE_CODE_URL") or "https://claude.ai/new").strip()
         log.info(
             "After Spotify, open Claude in Chrome%s on monitor %d: %s",
-            " fullscreen" if OPEN_CHROME_FULLSCREEN else "",
+            win_mode,
             CLAUDE_CHROME_MONITOR,
             cu,
+        )
+    if OPEN_GMAIL_IN_CHROME:
+        gu = (
+            os.environ.get("GMAIL_URL") or "https://mail.google.com/mail/u/0/#inbox"
+        ).strip()
+        log.info(
+            "After Spotify, open Gmail in Chrome%s on monitor %d: %s",
+            win_mode,
+            GMAIL_CHROME_MONITOR,
+            gu,
         )
     if OPEN_BINANCE_BTC_IN_CHROME:
         bu = (
@@ -1221,7 +1318,7 @@ def main() -> int:
         ).strip()
         log.info(
             "After Spotify, open Binance BTC in Chrome%s on monitor %d: %s",
-            " fullscreen" if OPEN_CHROME_FULLSCREEN else "",
+            win_mode,
             BINANCE_CHROME_MONITOR,
             bu,
         )
