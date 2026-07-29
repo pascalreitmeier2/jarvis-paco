@@ -1150,34 +1150,80 @@ def _ensure_dashboard_running() -> bool:
         log.warning("Dashboard entry point not found: %s", entry)
         return False
 
+    # Preflight: the #1 cause of "nothing happens" is that the dashboard's
+    # dependencies aren't installed yet. Check the key one and give a clear hint.
+    try:
+        import flask  # noqa: F401
+    except Exception:
+        log.warning(
+            "Dashboard dependencies missing. Run: python -m pip install -r requirements.txt "
+            "(Flask, anthropic, google-api-python-client)."
+        )
+        return False
+
     env = os.environ.copy()
-    # The listener opens the browser on the chosen monitor, so tell the
-    # dashboard process not to open its own tab.
+    # The listener opens the browser itself, so tell the dashboard process not
+    # to open its own tab.
     env["DASHBOARD_OPEN_BROWSER"] = "False"
+
+    # Capture the server's output to a log file so failures are visible instead
+    # of silently disappearing into DEVNULL.
+    log_path = project_dir / ".cache" / "dashboard.log"
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_path, "w", encoding="utf-8")
+    except OSError:
+        log_file = None
 
     popen_kw: dict = {
         "cwd": str(project_dir),
         "env": env,
         "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
+        "stdout": log_file or subprocess.DEVNULL,
+        "stderr": subprocess.STDOUT if log_file else subprocess.DEVNULL,
     }
     if sys.platform == "win32":
         popen_kw["creationflags"] = subprocess.CREATE_NO_WINDOW
     try:
-        log.info("Starting dashboard server: %s", entry)
-        subprocess.Popen([sys.executable, str(entry)], **popen_kw)
+        log.info("Starting dashboard server: %s (log: %s)", entry, log_path)
+        proc = subprocess.Popen([sys.executable, str(entry)], **popen_kw)
     except OSError as e:
         log.warning("Could not start dashboard server: %s", e)
+        if log_file:
+            log_file.close()
         return False
 
     deadline = time.monotonic() + max(1.0, DASHBOARD_START_TIMEOUT_S)
     while time.monotonic() < deadline:
         if _port_is_open(host, port):
             return True
+        # If the process already exited, it crashed on startup — surface why.
+        if proc.poll() is not None:
+            _log_dashboard_failure(log_path)
+            return False
         time.sleep(0.3)
-    log.warning("Dashboard server did not come up within %.0fs", DASHBOARD_START_TIMEOUT_S)
+
+    log.warning(
+        "Dashboard server did not come up within %.0fs. See %s",
+        DASHBOARD_START_TIMEOUT_S,
+        log_path,
+    )
     return False
+
+
+def _log_dashboard_failure(log_path: Path) -> None:
+    """Log the tail of the dashboard server's output after a startup crash."""
+    tail = ""
+    try:
+        tail = log_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        pass
+    if tail:
+        # Keep the console readable — last ~15 lines are enough for a traceback.
+        lines = tail.splitlines()[-15:]
+        log.warning("Dashboard server crashed on startup:\n%s", "\n".join(lines))
+    else:
+        log.warning("Dashboard server exited immediately (see %s)", log_path)
 
 
 def open_dashboard_in_chrome() -> None:
