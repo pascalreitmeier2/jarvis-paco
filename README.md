@@ -36,6 +36,7 @@ Without these, the welcome speech is skipped (other actions may still run).
 | `TASARADAR_URL` | URL opened for Tasaradar in Chrome (default: `https://tasaradar.com`). `BINANCE_BTC_URL` is still read as a fallback if set. |
 | `CHROME_NEW_WINDOW_WAIT_S` | Seconds to wait for a new Chrome window on Windows (default `25`). |
 | `CHROME_WINDOW_WIDTH` / `CHROME_WINDOW_HEIGHT` | Windowed Chrome size when not fullscreen. |
+| `SPOTIFY_BG_WAIT_S` | Windows: seconds to wait for the Spotify window before minimizing it for background playback (default `8`). Only used when `SPOTIFY_PLAY_IN_BACKGROUND` is enabled. |
 
 Example `.env`:
 
