@@ -30,7 +30,11 @@ Tuning (constants below):
   OPEN_CLAUDE_CODE_IN_CHROME — Claude in Chrome after Spotify (CLAUDE_CODE_URL).
   OPEN_GMAIL_IN_CHROME — Gmail inbox in Chrome after Spotify (GMAIL_URL, default the Gmail inbox).
   OPEN_BINANCE_BTC_IN_CHROME — Binance BTC trade page in Chrome (BINANCE_BTC_URL).
+  OPEN_CHROME_TABS_IN_ONE_WINDOW — open Claude/Gmail/Binance as tabs in a single Chrome window instead of one window
+    per site. When True, the per-site monitor/profile settings are ignored (all tabs share one window on CHROME_TABS_MONITOR).
+  CHROME_TABS_MONITOR — 1-based display index for the combined tab window (Windows only).
   CLAUDE_CHROME_MONITOR / GMAIL_CHROME_MONITOR / BINANCE_CHROME_MONITOR — 1-based display index (Windows: sorted left-to-top).
+    Only used when OPEN_CHROME_TABS_IN_ONE_WINDOW is False (one window per site).
   CHROME_SEPARATE_SITE_PROFILES — Windows: if True, uses temp --user-data-dir per site (not your normal profile).
     Default False so Claude/Gmail/Binance use your usual Chrome profile and logins; enable only if both windows keep
     opening on the same monitor and you accept a separate profile for automation.
@@ -111,7 +115,14 @@ OPEN_CHROME_FULLSCREEN = False
 OPEN_WINDOWS_MAXIMIZED = True
 # False = default Chrome profile (your normal user, extensions, cookies). True = temp dirs under %TEMP% per site.
 CHROME_SEPARATE_SITE_PROFILES = False
+# Open Claude/Gmail/Binance as tabs in a SINGLE Chrome window instead of one
+# window per site. When True, the per-site monitor and per-site profile settings
+# below are ignored: all tabs share one window (one profile) on CHROME_TABS_MONITOR.
+OPEN_CHROME_TABS_IN_ONE_WINDOW = True
+# Monitor for the combined tab window (1-based; Windows only, ignored elsewhere).
+CHROME_TABS_MONITOR = 1
 # Which physical screen (1 = leftmost/top-first after sorting). Windows only; ignored elsewhere.
+# Only used when OPEN_CHROME_TABS_IN_ONE_WINDOW is False (one window per site).
 CLAUDE_CHROME_MONITOR = 1
 GMAIL_CHROME_MONITOR = 2
 BINANCE_CHROME_MONITOR = 3
@@ -897,7 +908,7 @@ def _chrome_snap_window_to_monitor_win32(
 
 
 def _open_url_in_chrome(
-    url: str,
+    url: str | list[str],
     *,
     new_window: bool = True,
     label: str = "URL",
@@ -908,8 +919,11 @@ def _open_url_in_chrome(
     win32_post_fullscreen_monitor: int | None = None,
     user_data_dir: str | None = None,
 ) -> None:
-    u = url.strip()
-    if not u:
+    # Passing several URLs opens them as tabs in the one launched window: Chrome
+    # treats trailing positional URLs as separate tabs of the same window.
+    raw = [url] if isinstance(url, str) else list(url)
+    urls = [u.strip() for u in raw if u and u.strip()]
+    if not urls:
         return
     chrome = _chrome_executable()
     try:
@@ -940,7 +954,7 @@ def _open_url_in_chrome(
                 )
             ):
                 args.append("--start-maximized")
-            args.append(u)
+            args.extend(urls)
             popen_kw: dict = {
                 "args": args,
                 "stdin": subprocess.DEVNULL,
@@ -972,7 +986,8 @@ def _open_url_in_chrome(
                     )
         else:
             log.warning("Chrome not found; opening %s in default browser.", label)
-            webbrowser.open(u)
+            for u in urls:
+                webbrowser.open(u)
     except OSError as e:
         log.warning("Could not open %s in Chrome: %s", label, e)
 
@@ -1078,6 +1093,63 @@ def open_binance_btc_in_chrome() -> None:
         url,
         new_window=True,
         label="Binance BTC",
+        window_position=pos,
+        window_size=size,
+        fullscreen=fs,
+        maximized=OPEN_WINDOWS_MAXIMIZED,
+        win32_post_fullscreen_monitor=post_mon,
+        user_data_dir=user_data,
+    )
+
+
+def _enabled_chrome_site_urls() -> list[str]:
+    """URLs for the enabled Chrome sites, in the order they should become tabs."""
+    urls: list[str] = []
+    if OPEN_CLAUDE_CODE_IN_CHROME:
+        urls.append((os.environ.get("CLAUDE_CODE_URL") or "https://claude.ai/new").strip())
+    if OPEN_GMAIL_IN_CHROME:
+        urls.append(
+            (os.environ.get("GMAIL_URL") or "https://mail.google.com/mail/u/0/#inbox").strip()
+        )
+    if OPEN_BINANCE_BTC_IN_CHROME:
+        urls.append(
+            (
+                os.environ.get("BINANCE_BTC_URL")
+                or "https://www.binance.com/en/trade/BTC_USDT"
+            ).strip()
+        )
+    return [u for u in urls if u]
+
+
+def open_chrome_sites_in_one_window() -> None:
+    """Open every enabled Chrome site as a tab in a single new window."""
+    urls = _enabled_chrome_site_urls()
+    if not urls:
+        return
+    pos: tuple[int, int] | None = None
+    size: tuple[int, int] | None = None
+    fs = OPEN_CHROME_FULLSCREEN
+    post_mon: int | None = None
+    user_data: str | None = None
+    if sys.platform == "win32":
+        post_mon = CHROME_TABS_MONITOR
+        pos = _chrome_monitor_top_left(CHROME_TABS_MONITOR)
+        if fs:
+            size = _chrome_monitor_pixel_size(CHROME_TABS_MONITOR)
+        else:
+            size = _chrome_window_size()
+        # Tabs must share one window, hence one profile; a per-site dir would
+        # split them into separate windows. Use a single dedicated profile.
+        if CHROME_SEPARATE_SITE_PROFILES:
+            user_data = _chrome_site_user_data_dir("tabs")
+    elif not fs:
+        size = _chrome_window_size()
+    else:
+        size = None
+    _open_url_in_chrome(
+        urls,
+        new_window=True,
+        label="Chrome tabs",
         window_position=pos,
         window_size=size,
         fullscreen=fs,
@@ -1207,9 +1279,12 @@ def _focus_existing_cursor_window_win32() -> bool:
 def run_double_clap_actions() -> None:
     """Run outside the mic loop so sleeps do not stall capture."""
     play_song(SONG_URI)
-    open_claude_in_chrome()
-    open_gmail_in_chrome()
-    open_binance_btc_in_chrome()
+    if OPEN_CHROME_TABS_IN_ONE_WINDOW:
+        open_chrome_sites_in_one_window()
+    else:
+        open_claude_in_chrome()
+        open_gmail_in_chrome()
+        open_binance_btc_in_chrome()
     if JARVIS_WELCOME_ENABLED and JARVIS_WELCOME_PHRASE.strip():
         delay = max(0.0, JARVIS_AFTER_SONG_DELAY_S)
         if delay:
@@ -1293,35 +1368,47 @@ def main() -> int:
         if OPEN_CHROME_FULLSCREEN
         else (" maximized" if OPEN_WINDOWS_MAXIMIZED else "")
     )
-    if OPEN_CLAUDE_CODE_IN_CHROME:
-        cu = (os.environ.get("CLAUDE_CODE_URL") or "https://claude.ai/new").strip()
-        log.info(
-            "After Spotify, open Claude in Chrome%s on monitor %d: %s",
-            win_mode,
-            CLAUDE_CHROME_MONITOR,
-            cu,
-        )
-    if OPEN_GMAIL_IN_CHROME:
-        gu = (
-            os.environ.get("GMAIL_URL") or "https://mail.google.com/mail/u/0/#inbox"
-        ).strip()
-        log.info(
-            "After Spotify, open Gmail in Chrome%s on monitor %d: %s",
-            win_mode,
-            GMAIL_CHROME_MONITOR,
-            gu,
-        )
-    if OPEN_BINANCE_BTC_IN_CHROME:
-        bu = (
-            os.environ.get("BINANCE_BTC_URL")
-            or "https://www.binance.com/en/trade/BTC_USDT"
-        ).strip()
-        log.info(
-            "After Spotify, open Binance BTC in Chrome%s on monitor %d: %s",
-            win_mode,
-            BINANCE_CHROME_MONITOR,
-            bu,
-        )
+    if OPEN_CHROME_TABS_IN_ONE_WINDOW:
+        tab_urls = _enabled_chrome_site_urls()
+        if tab_urls:
+            log.info(
+                "After Spotify, open %d site(s) as tabs in one Chrome window%s on "
+                "monitor %d: %s",
+                len(tab_urls),
+                win_mode,
+                CHROME_TABS_MONITOR,
+                ", ".join(tab_urls),
+            )
+    else:
+        if OPEN_CLAUDE_CODE_IN_CHROME:
+            cu = (os.environ.get("CLAUDE_CODE_URL") or "https://claude.ai/new").strip()
+            log.info(
+                "After Spotify, open Claude in Chrome%s on monitor %d: %s",
+                win_mode,
+                CLAUDE_CHROME_MONITOR,
+                cu,
+            )
+        if OPEN_GMAIL_IN_CHROME:
+            gu = (
+                os.environ.get("GMAIL_URL") or "https://mail.google.com/mail/u/0/#inbox"
+            ).strip()
+            log.info(
+                "After Spotify, open Gmail in Chrome%s on monitor %d: %s",
+                win_mode,
+                GMAIL_CHROME_MONITOR,
+                gu,
+            )
+        if OPEN_BINANCE_BTC_IN_CHROME:
+            bu = (
+                os.environ.get("BINANCE_BTC_URL")
+                or "https://www.binance.com/en/trade/BTC_USDT"
+            ).strip()
+            log.info(
+                "After Spotify, open Binance BTC in Chrome%s on monitor %d: %s",
+                win_mode,
+                BINANCE_CHROME_MONITOR,
+                bu,
+            )
     if JARVIS_WELCOME_ENABLED:
         ev, em, ef, er = elevenlabs_env_config()
         log.info(
