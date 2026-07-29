@@ -36,7 +36,9 @@ Without these, the welcome speech is skipped (other actions may still run).
 | `TASARADAR_URL` | URL opened for Tasaradar in Chrome (default: `https://tasaradar.com`). `BINANCE_BTC_URL` is still read as a fallback if set. |
 | `CHROME_NEW_WINDOW_WAIT_S` | Seconds to wait for a new Chrome window on Windows (default `25`). |
 | `CHROME_WINDOW_WIDTH` / `CHROME_WINDOW_HEIGHT` | Windowed Chrome size when not fullscreen. |
-| `SPOTIFY_BG_WAIT_S` | Windows: seconds to wait for the Spotify window before minimizing it for background playback (default `8`). Only used when `SPOTIFY_PLAY_IN_BACKGROUND` is enabled. |
+| `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | Spotify Web API app credentials from the [developer dashboard](https://developer.spotify.com/dashboard). When set (and `SPOTIFY_PLAY_IN_BACKGROUND` is enabled), the configured track is played on the already-open Spotify **without any window popping up** — song selection and playback happen fully in the background. A one-time browser consent is cached under `.cache/spotify_token.json`. Keep the Spotify app open so it appears as an online playback device. |
+| `SPOTIFY_REDIRECT_URI` | OAuth redirect URI for the Web API (default `http://127.0.0.1:8888/callback`). Must be added verbatim to your Spotify app's *Redirect URIs* in the dashboard. |
+| `SPOTIFY_BG_WAIT_S` | Windows fallback (used only when the Web API is not configured): seconds to wait for the Spotify window before minimizing it (default `8`). Only used when `SPOTIFY_PLAY_IN_BACKGROUND` is enabled. |
 
 Example `.env`:
 
